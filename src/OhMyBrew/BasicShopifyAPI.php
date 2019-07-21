@@ -2,6 +2,7 @@
 
 namespace OhMyBrew;
 
+use Psr\Log\LogLevel;
 use stdClass;
 use Closure;
 use Exception;
