@@ -12,11 +12,13 @@ use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Exception\ServerException;
 use GuzzleHttp\Exception\ClientException;
+use Psr\Log\LoggerAwareInterface;
+use Psr\Log\LoggerInterface;
 
 /**
  * Basic Shopify API for REST & GraphQL.
  */
-class BasicShopifyAPI
+class BasicShopifyAPI implements LoggerAwareInterface
 {
     /**
      * API version pattern.
@@ -24,6 +26,13 @@ class BasicShopifyAPI
      * @var string
      */
     const VERSION_PATTERN = '/([0-9]{4}-[0-9]{2})|unstable/';
+
+    /**
+     * The key to use for logging (prefix for filtering).
+     *
+     * @var string
+     */
+    const LOG_KEY = '[BasicShopifyAPI]';
 
     /**
      * The Guzzle client.
@@ -137,6 +146,13 @@ class BasicShopifyAPI
      * @var int
      */
     protected $requestTimestamp;
+
+    /**
+     * The logger.
+     *
+     * @var LoggerInterface
+     */
+    protected $logger;
 
     /**
      * Constructor.
@@ -427,6 +443,8 @@ class BasicShopifyAPI
      */
     public function withSession(string $shop, string $accessToken, Closure $closure)
     {
+        $this->log("WithSession started for {$shop}");
+
         // Clone the API class and bind it to the closure
         $clonedApi = clone $this;
         $clonedApi->setSession($shop, $accessToken);
@@ -548,7 +566,11 @@ class BasicShopifyAPI
         );
 
         // Decode the response body
-        return json_decode($request->getBody());
+        $body = json_decode($request->getBody());
+
+        $this->log('RequestAccess response: '.json_encode($body));
+
+        return $body;
     }
 
     /**
@@ -580,6 +602,7 @@ class BasicShopifyAPI
         if (property_exists($access, 'associated_user')) {
             // Set the user if applicable
             $this->setUser($access->associated_user);
+            $this->log('User access: '.json_encode($access->associated_user));
         }
     }
 
@@ -643,13 +666,15 @@ class BasicShopifyAPI
         $this->requestTimestamp = microtime(true);
 
         // Create the request, pass the access token and optional parameters
+        $req = json_encode($request);
         $response = $this->client->request(
             'POST',
             $this->getBaseUri()->withPath(
                 $this->versionPath('/admin/api/graphql.json')
             ),
-            ['body' => json_encode($request)]
+            ['body' => $req]
         );
+        $this->log("Graph request: {$req}");
 
         // Grab the data result and extensions
         $body = $this->jsonDecode($response->getBody());
@@ -666,6 +691,8 @@ class BasicShopifyAPI
             ];
         }
 
+        $this->log('Graph response: '.json_encode(property_exists($body, 'errors') ? $body->errors : $body->data));
+
         // Return Guzzle response and JSON-decoded body
         return (object) [
             'response'   => $response,
@@ -678,15 +705,16 @@ class BasicShopifyAPI
     /**
      * Runs a request to the Shopify API.
      *
-     * @param string     $type   The type of request... GET, POST, PUT, DELETE
-     * @param string     $path   The Shopify API path... /admin/xxxx/xxxx.json
-     * @param array|null $params Optional parameters to send with the request
+     * @param string     $type    The type of request... GET, POST, PUT, DELETE
+     * @param string     $path    The Shopify API path... /admin/xxxx/xxxx.json
+     * @param array|null $params  Optional parameters to send with the request
+     * @param array      $headers Optional headers to append to the request
      *
      * @throws Exception
      *
      * @return object An Object of the Guzzle response, and JSON-decoded body
      */
-    public function rest(string $type, string $path, array $params = null)
+    public function rest(string $type, string $path, array $params = null, array $headers = [])
     {
         // Check the rate limit before firing the request
         if ($this->isRateLimitingEnabled() && $this->requestTimestamp) {
@@ -696,6 +724,7 @@ class BasicShopifyAPI
 
             if ($waitTime > 0) {
                 // Do the sleep for X mircoseconds (convert from milliseconds)
+                $this->log('Rest rate limit hit');
                 usleep($waitTime * 1000);
             }
         }
@@ -718,11 +747,20 @@ class BasicShopifyAPI
                 $guzzleParams[strtoupper($type) === 'GET' ? 'query' : 'json'] = $params;
             }
 
-            !env('SHOPIFY_SDK_DEBUG')
-                ?: \Log::debug("Request: $type - $uri - ".print_r($guzzleParams, true));
+            $this->log("[{$uri}:{$type}] Request Params: ".json_encode($params));
+
+            // Add custom headers
+            if (count($headers) > 0) {
+                $guzzleParams['headers'] = $headers;
+                $this->log("[{$uri}:{$type}] Request Headers: ".json_encode($headers));
+            }
 
             // Set the response
-            $response = $this->client->request($type, $uri, $guzzleParams);
+            $response = $this->client->request(
+                $type,
+                $uri,
+                $guzzleParams
+            );
             $body = $response->getBody();
 
             !env('SHOPIFY_SDK_DEBUG')
@@ -751,6 +789,8 @@ class BasicShopifyAPI
                     'body'      => $this->jsonDecode($body),
                     'exception' => $e,
                 ];
+
+                $this->log("[{$uri}:{$type}] {$response->getStatusCode()} Error: {$body}");
             } else {
                 !env('SHOPIFY_SDK_DEBUG') OR !$body
                     ?: \Log::debug("Exception-Response-Body:\n".$body->getContents());
@@ -769,6 +809,8 @@ class BasicShopifyAPI
                 'limit' => (int) $calls[1],
             ];
         }
+
+        $this->log("[{$uri}:{$type}] {$response->getStatusCode()}: ".json_encode($errors ? $body->getContents() : $body));
 
         // Return Guzzle response and JSON-decoded body
         return (object) [
@@ -833,6 +875,39 @@ class BasicShopifyAPI
         }
 
         return $request;
+    }
+
+    /**
+     * Sets a logger instance on the object.
+     *
+     * @param LoggerInterface $logger
+     *
+     * @return void
+     */
+    public function setLogger(LoggerInterface $logger)
+    {
+        $this->logger = $logger;
+    }
+
+    /**
+     * Log a message to the logger.
+     *
+     * @param string $msg   The message to send.
+     * @param int    $level The level of message.
+     *
+     * @return bool
+     */
+    public function log(string $msg, string $level = LogLevel::DEBUG)
+    {
+        if ($this->logger === null) {
+            // No logger, do nothing
+            return false;
+        }
+
+        // Call the logger by level and pass the message
+        call_user_func([$this->logger, $level], self::LOG_KEY.' '.$msg);
+
+        return true;
     }
 
     /**
