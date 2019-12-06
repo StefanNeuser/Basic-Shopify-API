@@ -2,8 +2,7 @@
 
 namespace OhMyBrew\Test;
 
-use GuzzleHttp\Exception\ClientException;
-use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use OhMyBrew\BasicShopifyAPI;
@@ -130,7 +129,7 @@ class RestApiTest extends BaseTest
         $this->assertEquals('Apple Computers', $request->body->shop->name);
         $this->assertEquals('limit=1&page=1', $data);
         $this->assertEquals('!@#', $token_header);
-        $this->assertFalse($request->errors);
+        $this->assertNull($request->link);
     }
 
     /**
@@ -349,7 +348,7 @@ class RestApiTest extends BaseTest
     {
         // Fake a bad response
         $responses = [
-            new ClientException(
+            new RequestException(
                 '404 Not Found',
                 new Request('GET', 'test'),
                 new Response(
@@ -372,37 +371,8 @@ class RestApiTest extends BaseTest
         $result = $api->rest('GET', '/admin/shop-oops.json');
 
         // Confirm
-        $this->assertTrue(is_object($result->errors));
-        $this->assertEquals($result->errors->body->errors, 'Not Found');
-    }
-
-    /**
-     * @test
-     * @expectedException \GuzzleHttp\Exception\ConnectException
-     * @expectedExceptionMessage Connection issue
-     *
-     * Should rethrow exceptions that do not match a client or server exception.
-     */
-    public function itShouldRethrowExceptionsWhichAreNotClientOrServer()
-    {
-        // Fake a bad response
-        $responses = [
-            new ConnectException(
-                'Connection issue',
-                new Request('GET', 'test')
-            ),
-        ];
-
-        $api = new BasicShopifyAPI(true);
-        $mock = $this->buildClient($api, $responses);
-
-        // Make the call
-        $api->setShop('example.myshopify.com');
-        $api->setApiKey('123');
-        $api->setApiPassword('abc');
-
-        // Cause the exception
-        $result = $api->rest('GET', '/admin/shop-oops.json');
+        $this->assertTrue($result->errors);
+        $this->assertEquals($result->body, 'Not Found');
     }
 
     /**
@@ -472,5 +442,66 @@ class RestApiTest extends BaseTest
 
         $lastRequest = $mock->getLastRequest();
         $this->assertEquals('123', $lastRequest->getHeader('X-Shopify-Test')[0]);
+    }
+
+    /**
+     * @test
+     *
+     * Ensure Async requests are working
+     */
+    public function itShouldRunAsyncRequests()
+    {
+        $responses = [
+            new Response(
+                200,
+                ['http_x_shopify_shop_api_call_limit' => '2/80'],
+                file_get_contents(__DIR__.'/fixtures/rest/admin__shop.json')
+            ),
+        ];
+
+        $api = new BasicShopifyAPI(true);
+        $mock = $this->buildClient($api, $responses);
+
+        $api->setShop('example.myshopify.com');
+        $api->setApiKey('123');
+        $api->setApiPassword('abc');
+
+        $promise = $api->restAsync('GET', '/admin/shop.json');
+        $promise->then(function ($result) {
+            $this->assertEquals(true, is_object($result->body));
+            $this->assertEquals('Apple Computers', $result->body->shop->name);
+        });
+        $promise->wait();
+    }
+
+    /**
+     * @test
+     *
+     * Ensures extraction of the "Link" header is done
+     */
+    public function itShouldExtractLinkHeader()
+    {
+        $pageInfo = 'eyJsYXN0X2lkIjo0MDkwMTQ0ODQ5OTgyLCJsYXN0X3ZhbHVlIjoiPGh0bWw-PGh0bWw-MiBZZWFyIERWRCwgQmx1LVJheSwgU2F0ZWxsaXRlLCBhbmQgQ2FibGUgRnVsbCBDaXJjbGXihKIgMTAwJSBWYWx1ZSBCYWNrIFByb2R1Y3QgUHJvdGVjdGlvbiB8IDIgYW4gc3VyIGxlcyBsZWN0ZXVycyBEVkQgZXQgQmx1LXJheSBldCBwYXNzZXJlbGxlcyBtdWx0aW3DqWRpYXMgYXZlYyByZW1pc2Ugw6AgMTAwICUgQ2VyY2xlIENvbXBsZXQ8c3VwPk1DPFwvc3VwPjxcL2h0bWw-PFwvaHRtbD4iLCJkaXJlY3Rpb24iOiJuZXh0In0';
+        $responses = [
+            new Response(
+                200,
+                [
+                    'http_x_shopify_shop_api_call_limit' => '1/80',
+                    'link'                               => '<https://example.myshopify.com/admin/api/unstable/products.json?page_info='.$pageInfo.'>; rel="next"',
+                ],
+                file_get_contents(__DIR__.'/fixtures/rest/admin__shop.json')
+            ),
+        ];
+
+        $api = new BasicShopifyAPI(true);
+        $mock = $this->buildClient($api, $responses);
+
+        $api->setShop('example.myshopify.com');
+        $api->setVersion('unstable');
+        $api->setApiKey('123');
+        $api->setApiPassword('abc');
+
+        $result = $api->rest('GET', '/admin/shop.json');
+        $this->assertEquals($pageInfo, $result->link->next);
     }
 }

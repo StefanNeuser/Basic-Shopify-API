@@ -1,5 +1,22 @@
 # CHANGELOG
 
+# 6.1.2
+
++ Fix for REST calls not properly building error object (#47).
+
+# 6.1.1
+
++ Fixed `extractHeaderLink` for #45, to include both `next` and `previous`.
+
+# 6.1.0
+
++ Adds support for `Link` header (#39)
+
+# 6.0.0
+
++ Added ability to do Guzzle sync and async requests through Promises.
++ `errors` now returns a boolean instead of an object. `body` now contains the error response.
+
 # 5.5.0
 
 + Added ability to use custom headers in REST calls.
