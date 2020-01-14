@@ -780,7 +780,13 @@ class BasicShopifyAPI implements LoggerAwareInterface
             // Build the error object
             $body = $this->jsonDecode($body);
             if ($body !== null) {
-                $body = property_exists($body, 'errors') ? $body->errors : null;
+                if (property_exists($body, 'errors')) {
+                    $body = $body->errors;
+                } elseif (property_exists($body, 'error')) {
+                    $body = $body->error;
+                } else {
+                    $body = null;
+                }
             }
 
             return (object) [
